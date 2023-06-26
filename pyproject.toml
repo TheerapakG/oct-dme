@@ -1,0 +1,20 @@
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "project"
+version = "0.0.0"
+description = "project"
+license = "Proprietary"
+authors = [
+    "TheerapakG <theerapakg@gmail.com>",
+]
+
+[tool.poetry.dependencies]
+python = "^3.8"
+
+google-colab = { git = "https://github.com/googlecolab/colabtools" }
+fastbook = "^0.0.29"
+scikit-learn = "^1.2.2"
+opencv-python = "^4.7.0.72"

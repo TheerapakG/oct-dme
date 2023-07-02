@@ -16,7 +16,7 @@ for path in DATA_PATH.iterdir():
     gray = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
     _blur = cv2.bilateralFilter(gray, 32, 150, 150)
     blur = cv2.normalize(_blur, None, 0, 255, cv2.NORM_MINMAX)  # type: ignore
-    _, thresh = cv2.threshold(blur, 100, 255, cv2.THRESH_BINARY)
+    _, thresh = cv2.threshold(blur, 60, 255, cv2.THRESH_BINARY)
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     cs = [c for c in contours if cv2.contourArea(c) > 16 * thresh.shape[0]]
     min_p = dict()

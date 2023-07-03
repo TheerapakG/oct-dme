@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 from pathlib import Path
+import shutil
 
 from .preprocess import preprocess
 
@@ -26,6 +27,7 @@ def get_reject_score(img):
 
 if __name__ == "__main__":
     DATA_PATH = Path("./data/dme/")
+    RESULT_PATH = Path("./data/filter_dme/")
     # path = Path("./data/dme/Response_f3bc8bc543ac8f076627c71ea8efaf35_L_011.jpg") 19.414806647938477
     # path = Path("./data/dme/Non response_0b9cf0f939daa80b6f7c1457ad104140_L_012.jpg") 48.309320653313506
 
@@ -37,5 +39,6 @@ if __name__ == "__main__":
 
         score = get_reject_score(cv2.cvtColor(img[:496, 496:, :], cv2.COLOR_BGR2GRAY))
 
-        if score > 30:
-            print(score, f'"{path}"')
+        res_dir = RESULT_PATH / ("reject" if score > 30 else "accept")
+        res_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, res_dir / f"{int(score)}_{path.name}")

@@ -11,7 +11,7 @@ def preprocess_step1_alt(ctx: Context):
     if ctx.reject:
         return ctx
 
-    imshow("img", ctx.img)
+    imshow(ctx.img, name="img")
 
     norm = cv2.normalize(
         ctx.img,
@@ -30,10 +30,10 @@ def preprocess_step1_alt(ctx: Context):
 
         intermediate = cv2.bitwise_and(intermediate, neighbor_thresh)
 
-    imshow("intermediate", intermediate)
+    imshow(intermediate)
 
     _, intermediate_thresh = cv2.threshold(intermediate, 15, 255, cv2.THRESH_BINARY)
-    imshow("s1_intermediate_thresh", intermediate_thresh)
+    imshow(intermediate_thresh)
 
     intermediate_contours, _ = cv2.findContours(
         intermediate_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
@@ -41,16 +41,14 @@ def preprocess_step1_alt(ctx: Context):
     big_intermediate_contours = [
         c for c in intermediate_contours if cv2.contourArea(c) > 2500
     ]
-    imshow_contours(
-        "s1_big_intermediate_contours", big_intermediate_contours, (0, 0, 255)
-    )
+    imshow_contours(big_intermediate_contours, (0, 0, 255))
 
     hull = cv2.convexHull(np.vstack(big_intermediate_contours))
 
     stencil = np.zeros(ctx.img.shape).astype(ctx.img.dtype)
     cv2.fillPoly(stencil, [hull], (255))
     result = cv2.bitwise_and(norm, stencil)
-    imshow("step 1", result)
+    imshow(result)
     return replace(ctx, img=result)
 
 
@@ -91,12 +89,12 @@ def preprocess_step1(ctx: Context):
         255,
         cv2.NORM_MINMAX,
     )
-    imshow("s1_not_keep", not_keep)
+    imshow(not_keep)
 
     not_keep_blur = cv2.normalize(
         cv2.GaussianBlur(not_keep, (5, 5), 0), None, 0, 255, cv2.NORM_MINMAX  # type: ignore
     )
-    imshow("s1_not_keep_blur", not_keep_blur)
+    imshow(not_keep_blur)
 
     _, thresh = cv2.threshold(not_keep_blur, 75, 255, cv2.THRESH_BINARY_INV)
     # imshow("s1_thresh", thresh)
@@ -109,10 +107,10 @@ def preprocess_step1(ctx: Context):
     stencil = np.zeros(ctx.img.shape).astype(ctx.img.dtype)
     cv2.fillPoly(stencil, big_contours, (255))
     intermediate = cv2.bitwise_and(norm, stencil)
-    imshow("s1_intermediate", intermediate)
+    imshow(intermediate)
 
     _, intermediate_thresh = cv2.threshold(intermediate, 15, 255, cv2.THRESH_BINARY)
-    imshow("s1_intermediate_thresh", intermediate_thresh)
+    imshow(intermediate_thresh)
 
     intermediate_contours, _ = cv2.findContours(
         intermediate_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
@@ -120,16 +118,14 @@ def preprocess_step1(ctx: Context):
     big_intermediate_contours = [
         c for c in intermediate_contours if cv2.contourArea(c) > 2500
     ]
-    imshow_contours(
-        "s1_big_intermediate_contours", big_intermediate_contours, (0, 0, 255)
-    )
+    imshow_contours(big_intermediate_contours, (0, 0, 255))
 
     hull = cv2.convexHull(np.vstack(big_intermediate_contours))
 
     stencil = np.zeros(ctx.img.shape).astype(ctx.img.dtype)
     cv2.fillPoly(stencil, [hull], (255))
     result = cv2.bitwise_and(norm, stencil)
-    imshow("step 1", result)
+    imshow(result)
     return replace(ctx, img=result)
 
 
@@ -158,7 +154,7 @@ def preprocess_step2(ctx: Context):
     stencil = np.zeros(ctx.img.shape).astype(ctx.img.dtype)
     cv2.fillPoly(stencil, [hull], (255))
     result = cv2.bitwise_and(norm, stencil)
-    imshow("step 2", result)
+    imshow(result)
     return replace(ctx, img=result)
 
 
@@ -188,7 +184,7 @@ def reject_step2(ctx: Context):
     )
 
     score = neighbor_diff.sum() / cv2.contourArea(hull)
-    return Context(norm, reject=score > 30, score=[*ctx.score, int(score)])
+    return replace(ctx, img=norm, reject=score > 30, score=[*ctx.score, int(score)])
 
 
 def preprocess_step3(ctx: Context):
@@ -215,7 +211,7 @@ def preprocess_step3(ctx: Context):
     x, y, w, h = cv2.boundingRect(hull)
 
     result = cv2.resize(ctx.img[y : y + h, x : x + w], ctx.img.shape[::-1])
-    imshow("step 3", result)
+    imshow(result)
     return replace(ctx, img=result)
 
 
@@ -246,7 +242,7 @@ if __name__ == "__main__":
     result = preprocess(
         Context(
             cv2.cvtColor(img[:496, 496:, :], cv2.COLOR_BGR2GRAY),
-            dbg=preprocess_step1_alt,
+            dbg=preprocess_step1,
         )
     )
     cv2.waitKey(10000)

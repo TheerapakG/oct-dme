@@ -23,19 +23,6 @@ def dbg_only(*, arg_names: list[str] = []):
 
             stack = inspect.stack()
 
-            if arg_names:
-                bound = signature.bind_partial(*args, **kwargs)
-                bound_args = {
-                    n: bound.arguments[n] for n in arg_names if n in bound.arguments
-                }
-                arg_names_dict = {
-                    n: [f_n for f_n, f_v in stack[1].frame.f_locals.items() if v is f_v]
-                    for n, v in bound_args.items()
-                }
-                kwargs["arg_names"] = {
-                    n: f_ns for n, f_ns in arg_names_dict.items() if f_ns
-                }
-
             for frameinfo in stack:
                 if (
                     ctx is None
@@ -54,6 +41,19 @@ def dbg_only(*, arg_names: list[str] = []):
                 )
             ):
                 return
+
+            if arg_names:
+                bound = signature.bind_partial(*args, **kwargs)
+                bound_args = {
+                    n: bound.arguments[n] for n in arg_names if n in bound.arguments
+                }
+                arg_names_dict = {
+                    n: [f_n for f_n, f_v in stack[1].frame.f_locals.items() if v is f_v]
+                    for n, v in bound_args.items()
+                }
+                kwargs["arg_names"] = {
+                    n: f_ns for n, f_ns in arg_names_dict.items() if f_ns
+                }
 
             if "caller" in signature.parameters and "caller" not in kwargs:
                 kwargs["caller"] = stack[1].function

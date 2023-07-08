@@ -13,84 +13,90 @@ class Context:
     dbg: Callable | bool = field(default=False)
 
 
-def dbg_only(*, arg_names: list[str] = []):
-    def decorator(f):
-        signature = inspect.signature(f)
+def dbg_only(f):
+    signature = inspect.signature(f)
 
-        @wraps(f)
-        def wrapper(*args, **kwargs):
-            ctx: Context | None = None
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        ctx: Context | None = None
 
-            stack = inspect.stack()
+        stack = inspect.stack()
 
-            for frameinfo in stack:
-                if (
-                    ctx is None
-                    and (_ctx := frameinfo.frame.f_locals.get("ctx", None))
-                    and isinstance(_ctx, Context)
-                ):
-                    ctx = _ctx
-
+        for frameinfo in stack:
             if (
-                not ctx
-                or not ctx.dbg
-                or (
-                    inspect.isfunction(ctx.dbg)
-                    and ctx.dbg.__name__
-                    not in [frameinfo.function for frameinfo in stack]
-                )
+                ctx is None
+                and (_ctx := frameinfo.frame.f_locals.get("ctx", None))
+                and isinstance(_ctx, Context)
             ):
-                return
+                ctx = _ctx
 
-            if arg_names:
-                bound = signature.bind_partial(*args, **kwargs)
-                bound_args = {
-                    n: bound.arguments[n] for n in arg_names if n in bound.arguments
-                }
-                arg_names_dict = {
-                    n: [f_n for f_n, f_v in stack[1].frame.f_locals.items() if v is f_v]
-                    for n, v in bound_args.items()
-                }
-                kwargs["arg_names"] = {
-                    n: f_ns for n, f_ns in arg_names_dict.items() if f_ns
-                }
+        if (
+            not ctx
+            or not ctx.dbg
+            or (
+                inspect.isfunction(ctx.dbg)
+                and ctx.dbg.__name__ not in [frameinfo.function for frameinfo in stack]
+            )
+        ):
+            return
 
-            if "caller" in signature.parameters and "caller" not in kwargs:
-                kwargs["caller"] = stack[1].function
+        bound = signature.bind_partial(*args, **kwargs)
+        if "arg_names" in signature.parameters:
+            bound_args = {
+                n: bound.arguments[n]
+                for n in signature.parameters["arg_names"].default.keys()
+                if n in bound.arguments
+            }
+            arg_names_dict = {
+                n: [f_n for f_n, f_v in stack[1].frame.f_locals.items() if v is f_v]
+                for n, v in bound_args.items()
+            }
+            bound.arguments["arg_names"] = {
+                **signature.parameters["arg_names"].default,
+                **{n: f_ns for n, f_ns in arg_names_dict.items() if f_ns},
+                **bound.arguments.get("arg_names", {}),
+            }
 
-            if "ctx" in signature.parameters and "ctx" not in kwargs:
-                kwargs["ctx"] = ctx
+        if "caller" in signature.parameters and "caller" not in bound.arguments:
+            bound.arguments["caller"] = stack[1].function
 
-            return f(*args, **kwargs)
+        if "ctx" in signature.parameters and "ctx" not in bound.arguments:
+            bound.arguments["ctx"] = ctx
 
-        return wrapper
+        bound.apply_defaults()
 
-    return decorator
+        return f(*bound.args, **bound.kwargs)
+
+    return wrapper
 
 
-@dbg_only(arg_names=["mat"])
+@dbg_only
 def imshow(
-    mat,
+    img: cv2.Mat | None = None,
     *,
     name: str | None = None,
-    arg_names: dict[str, list[str]] = {},
+    arg_names: dict[str, list[str]] = {"img": ["unknown"]},
     caller="unknown",
+    ctx: Context | None = None,
 ):
     """
     magic imshow function that only show image in "debug mode"
     """
+    assert ctx
     cv2.imshow(
-        name if name else f"{caller}_{arg_names.get('mat', ['unknown'])[0]}", mat
+        name if name else f"{caller}_{arg_names['img'][0]}",
+        img if img is not None else ctx.img,
     )
 
 
-@dbg_only(arg_names=["contours"])
+@dbg_only
 def imshow_contours(
     contours,
     color,
+    img: cv2.Mat | None = None,
     *,
     name: str | None = None,
-    arg_names: dict[str, str] = {},
+    arg_names: dict[str, list[str]] = {"contours": ["unknown"]},
     caller="unknown",
     ctx: Context | None = None,
 ):
@@ -99,9 +105,9 @@ def imshow_contours(
     """
     assert ctx
     cv2.imshow(
-        name if name else f"{caller}_{arg_names.get('contours', ['unknown'])[0]}",
+        name if name else f"{caller}_{arg_names['contours'][0]}",
         cv2.drawContours(
-            cv2.cvtColor(ctx.img, cv2.COLOR_GRAY2BGR),
+            cv2.cvtColor(img if img is not None else ctx.img, cv2.COLOR_GRAY2BGR),
             contours,
             -1,
             color,

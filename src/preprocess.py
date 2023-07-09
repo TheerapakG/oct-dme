@@ -1,10 +1,43 @@
 import cv2
 from dataclasses import replace
-from decimal import Decimal
 import numpy as np
 from pathlib import Path
 
 from .utils import Context, imshow, imshow_contours
+
+
+def morph_opens(img: cv2.Mat, structuring):
+    while True:
+        new_img = cv2.morphologyEx(
+            img,
+            cv2.MORPH_OPEN,
+            structuring,
+        )
+        if (img == new_img).all():
+            return img
+        img = new_img
+
+
+def morph_closes(img: cv2.Mat, structuring):
+    while True:
+        new_img = cv2.morphologyEx(
+            img,
+            cv2.MORPH_CLOSE,
+            structuring,
+        )
+        if (img == new_img).all():
+            return img
+        img = new_img
+
+
+def normalize(img: cv2.Mat):
+    return cv2.normalize(
+        img,
+        None,  # type: ignore
+        0,
+        255,
+        cv2.NORM_MINMAX,
+    )
 
 
 def preprocess_step1(ctx: Context):
@@ -14,48 +47,15 @@ def preprocess_step1(ctx: Context):
 
     imshow(ctx.img, name="img")
 
-    norm = cv2.normalize(
-        ctx.img,
-        None,  # type: ignore
-        0,
-        255,
-        cv2.NORM_MINMAX,
-    )
+    norm = normalize(ctx.img)
 
     structuring = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
 
     _, pic = cv2.threshold(norm, 45, 255, cv2.THRESH_BINARY)
-    morph_pic = pic.copy()
-    while True:
-        new_morph_pic = cv2.morphologyEx(
-            morph_pic,
-            cv2.MORPH_OPEN,
-            structuring,
-        )
-        if (morph_pic == new_morph_pic).all():
-            break
-        morph_pic = new_morph_pic
-    while True:
-        new_morph_pic = cv2.morphologyEx(
-            morph_pic,
-            cv2.MORPH_CLOSE,
-            structuring,
-        )
-        if (morph_pic == new_morph_pic).all():
-            break
-        morph_pic = new_morph_pic
+    morph_pic = morph_closes(morph_opens(pic, structuring), structuring)
 
     _, black = cv2.threshold(norm, 0, 255, cv2.THRESH_BINARY_INV)
-    morph_black = black.copy()
-    while True:
-        new_morph_black = cv2.morphologyEx(
-            morph_black,
-            cv2.MORPH_OPEN,
-            structuring,
-        )
-        if (morph_black == new_morph_black).all():
-            break
-        morph_black = new_morph_black
+    morph_black = morph_opens(black, structuring)
 
     contours_black, _ = cv2.findContours(
         morph_black, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
@@ -80,86 +80,46 @@ def preprocess_step1(ctx: Context):
         ),
     )
 
-    if ((morph_pic - region) > 0).sum() > (0.3 * (morph_pic > 0).sum()):
+    if ((morph_pic - region) > 0).sum() > (0.3 * (morph_pic > 0).sum()):  # type: ignore
         # maybe flood fill gone wrong
         region = morph_pic
 
-    morph_region = region.copy()
-    while True:
-        new_morph_region = cv2.morphologyEx(
-            morph_region,
-            cv2.MORPH_OPEN,
-            structuring,
-        )
-        if (morph_region == new_morph_region).all():
-            break
-        morph_region = new_morph_region
-    while True:
-        new_morph_region = cv2.morphologyEx(
-            morph_region,
-            cv2.MORPH_CLOSE,
-            structuring,
-        )
-        if (morph_region == new_morph_region).all():
-            break
-        morph_region = new_morph_region
+    morph_region = morph_closes(morph_opens(region, structuring), structuring)
     imshow(morph_region)
 
-    intermediate = cv2.normalize(
-        cv2.bitwise_and(norm, morph_region),
-        None,  # type: ignore
-        0,
-        255,
-        cv2.NORM_MINMAX,
+    intermediate = normalize(cv2.bitwise_and(norm, morph_region))
+
+    neighbor_diff = normalize(
+        abs(
+            cv2.filter2D(
+                intermediate, -1, np.array([[0, -1, 0], [-1, 4, -1], [0, -1, 0]])
+            )
+        )
     )
 
-    neighbor_diff = cv2.normalize(
-        abs(cv2.filter2D(intermediate, -1, np.array([[0, -1, 0], [-1, 4, -1], [0, -1, 0]]))),  # type: ignore
-        None,  # type: ignore
-        0,
-        255,
-        cv2.NORM_MINMAX,
-    )
-
-    neighbor_diff_blur = cv2.normalize(cv2.GaussianBlur(neighbor_diff, (5, 5), 0), None, 0, 255, cv2.NORM_MINMAX)  # type: ignore
+    neighbor_diff_blur = normalize(cv2.GaussianBlur(neighbor_diff, (5, 5), 0))
 
     dark_neighbor_diff_blur = cv2.bitwise_and(
         cv2.bitwise_not(intermediate), neighbor_diff_blur
     )
-    not_keep = cv2.normalize(
+    not_keep = normalize(
         abs(
             cv2.filter2D(
                 dark_neighbor_diff_blur,
                 -1,
                 np.array([[0, -1, 0], [-1, 4, -1], [0, -1, 0]]),  # type: ignore
             )  # now "outlines" remains
-        ),
-        None,  # type: ignore
-        0,
-        255,
-        cv2.NORM_MINMAX,
+        )
     )
     imshow(not_keep)
 
-    not_keep_blur = cv2.normalize(
-        cv2.GaussianBlur(not_keep, (5, 5), 0), None, 0, 255, cv2.NORM_MINMAX  # type: ignore
-    )
+    not_keep_blur = normalize(cv2.GaussianBlur(not_keep, (5, 5), 0))
     imshow(not_keep_blur)
 
     _, thresh = cv2.threshold(not_keep_blur, 75, 255, cv2.THRESH_BINARY_INV)
 
     keep = cv2.bitwise_and(thresh, morph_region)
-
-    morph_keep = keep.copy()
-    while True:
-        new_morph_keep = cv2.morphologyEx(
-            morph_keep,
-            cv2.MORPH_CLOSE,
-            structuring,
-        )
-        if (morph_keep == new_morph_keep).all():
-            break
-        morph_keep = new_morph_keep
+    morph_keep = morph_closes(keep, structuring)
     imshow(morph_keep)
 
     contours, _ = cv2.findContours(morph_keep, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
@@ -181,43 +141,27 @@ def preprocess_step2(ctx: Context):
     if ctx.reject:
         return ctx
 
-    norm = cv2.normalize(
-        ctx.img,
-        None,  # type: ignore
-        0,
-        255,
-        cv2.NORM_MINMAX,
+    norm = normalize(ctx.img)
+
+    neighbor_diff = normalize(
+        abs(cv2.filter2D(norm, -1, np.array([[0, -1, 0], [-1, 4, -1], [0, -1, 0]])))
     )
 
-    neighbor_diff = cv2.normalize(
-        abs(cv2.filter2D(norm, -1, np.array([[0, -1, 0], [-1, 4, -1], [0, -1, 0]]))),  # type: ignore
-        None,  # type: ignore
-        0,
-        255,
-        cv2.NORM_MINMAX,
-    )
-
-    neighbor_diff_blur = cv2.normalize(cv2.GaussianBlur(neighbor_diff, (5, 5), 0), None, 0, 255, cv2.NORM_MINMAX)  # type: ignore
+    neighbor_diff_blur = normalize(cv2.GaussianBlur(neighbor_diff, (5, 5), 0))
 
     dark_neighbor_diff_blur = cv2.bitwise_and(cv2.bitwise_not(norm), neighbor_diff_blur)
-    not_keep = cv2.normalize(
+    not_keep = normalize(
         abs(
             cv2.filter2D(
                 dark_neighbor_diff_blur,
                 -1,
                 np.array([[0, -1, 0], [-1, 4, -1], [0, -1, 0]]),  # type: ignore
             )  # now "outlines" remains
-        ),
-        None,  # type: ignore
-        0,
-        255,
-        cv2.NORM_MINMAX,
+        )
     )
     imshow(not_keep)
 
-    not_keep_blur = cv2.normalize(
-        cv2.GaussianBlur(not_keep, (5, 5), 0), None, 0, 255, cv2.NORM_MINMAX  # type: ignore
-    )
+    not_keep_blur = normalize(cv2.GaussianBlur(not_keep, (5, 5), 0))
     imshow(not_keep_blur)
 
     _, thresh = cv2.threshold(not_keep_blur, 75, 255, cv2.THRESH_BINARY_INV)
@@ -243,15 +187,7 @@ def preprocess_step2(ctx: Context):
         cv2.MORPH_OPEN,
         structuring,
     )
-    while True:
-        new_morph_intermediate_thresh = cv2.morphologyEx(
-            morph_intermediate_thresh,
-            cv2.MORPH_CLOSE,
-            structuring,
-        )
-        if (morph_intermediate_thresh == new_morph_intermediate_thresh).all():
-            break
-        morph_intermediate_thresh = new_morph_intermediate_thresh
+    morph_intermediate_thresh = morph_closes(morph_intermediate_thresh, structuring)
     imshow(morph_intermediate_thresh)
 
     intermediate_contours, _ = cv2.findContours(
@@ -276,15 +212,9 @@ def preprocess_step3(ctx: Context):
     if ctx.reject:
         return ctx
 
-    norm = cv2.normalize(
-        ctx.img,
-        None,  # type: ignore
-        0,
-        255,
-        cv2.NORM_MINMAX,
-    )
+    norm = normalize(ctx.img)
 
-    blur = cv2.normalize(cv2.bilateralFilter(norm, 32, 150, 150), None, 0, 255, cv2.NORM_MINMAX)  # type: ignore
+    blur = normalize(cv2.bilateralFilter(norm, 32, 150, 150))
 
     _, thresh = cv2.threshold(blur, 45, 255, cv2.THRESH_BINARY)
 
@@ -304,15 +234,9 @@ def reject_step3(ctx: Context):
     if ctx.reject:
         return ctx
 
-    norm = cv2.normalize(
-        ctx.img,
-        None,  # type: ignore
-        0,
-        255,
-        cv2.NORM_MINMAX,
-    )
+    norm = normalize(ctx.img)
 
-    blur = cv2.normalize(cv2.bilateralFilter(norm, 32, 150, 150), None, 0, 255, cv2.NORM_MINMAX)  # type: ignore
+    blur = normalize(cv2.bilateralFilter(norm, 32, 150, 150))
 
     _, thresh = cv2.threshold(blur, 45, 255, cv2.THRESH_BINARY)
 
@@ -334,15 +258,9 @@ def preprocess_step4(ctx: Context):
     if ctx.reject:
         return ctx
 
-    norm = cv2.normalize(
-        ctx.img,
-        None,  # type: ignore
-        0,
-        255,
-        cv2.NORM_MINMAX,
-    )
+    norm = normalize(ctx.img)
 
-    blur = cv2.normalize(cv2.bilateralFilter(norm, 32, 150, 150), None, 0, 255, cv2.NORM_MINMAX)  # type: ignore
+    blur = normalize(cv2.bilateralFilter(norm, 32, 150, 150))
 
     _, thresh = cv2.threshold(blur, 45, 255, cv2.THRESH_BINARY)
 

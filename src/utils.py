@@ -1,16 +1,35 @@
 import cv2
 from dataclasses import dataclass, field
 from functools import wraps
-from typing import Callable
 import inspect
+import numpy as np
+from typing import Callable
 
 
 @dataclass
 class Context:
     img: cv2.Mat
+    mask: cv2.Mat | None = field(default=None)
     reject: bool = field(default=False)
     score: list[int] = field(default_factory=list)
     dbg: Callable | bool = field(default=False)
+
+    @property
+    def mask_(self):
+        if self.mask is None:
+            self.mask = (np.ones(self.img.shape) * 255).astype(self.img.dtype)
+        return self.mask
+
+    @property
+    def masked(self):
+        return cv2.bitwise_and(self.img, self.img, mask=self.mask_)
+
+    def overlay_mask(self, color):
+        img = cv2.cvtColor(self.img, cv2.COLOR_GRAY2BGR)
+        color_img = np.zeros(img.shape, img.dtype)
+        color_img[:, :] = color
+        mask_img = cv2.bitwise_and(color_img, color_img, mask=self.mask_)
+        return cv2.addWeighted(mask_img, 1, img, 1, 0)
 
 
 def dbg_only(f):
@@ -84,8 +103,10 @@ def imshow(
     """
     assert ctx
     cv2.imshow(
-        name if name else f"{caller}_{arg_names['img'][0]}",
-        img if img is not None else ctx.img,
+        name
+        if name
+        else ("original" if img is None else f"{caller}_{arg_names['img'][0]}"),
+        img if img is not None else ctx.overlay_mask((0, 0, 63)),
     )
 
 
@@ -107,7 +128,9 @@ def imshow_contours(
     cv2.imshow(
         name if name else f"{caller}_{arg_names['contours'][0]}",
         cv2.drawContours(
-            cv2.cvtColor(img if img is not None else ctx.img, cv2.COLOR_GRAY2BGR),
+            cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+            if img is not None
+            else ctx.overlay_mask((0, 0, 63)),
             contours,
             -1,
             color,

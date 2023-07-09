@@ -49,5 +49,5 @@ if __name__ == "__main__":
             prep_dir.mkdir(parents=True, exist_ok=True)
             cv2.imwrite(
                 str(prep_dir / f"{'_'.join(str(s) for s in ctx.score)}_{path.name}"),
-                ctx.img,
+                ctx.masked,
             )

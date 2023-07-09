@@ -40,12 +40,29 @@ def normalize(img: cv2.Mat):
     )
 
 
+def get_hull(mask, size_threshold):
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    big_contours = [c for c in contours if cv2.contourArea(c) > size_threshold]
+    imshow_contours(big_contours, (0, 0, 255))
+
+    return cv2.convexHull(np.vstack(big_contours))
+
+
+def apply_mask(img, mask, size_threshold):
+    stencil = np.zeros(img.shape).astype(img.dtype)
+    cv2.fillPoly(stencil, [get_hull(mask, size_threshold)], (255))
+    result = cv2.bitwise_and(img, img, mask=stencil)
+    imshow(result)
+
+    return result
+
+
 def preprocess_step1(ctx: Context):
     # STEP 1: region based removal
     if ctx.reject:
         return ctx
 
-    imshow(ctx.img, name="img")
+    imshow()
 
     norm = normalize(ctx.img)
 
@@ -54,16 +71,30 @@ def preprocess_step1(ctx: Context):
     _, pic = cv2.threshold(norm, 45, 255, cv2.THRESH_BINARY)
     morph_pic = morph_closes(morph_opens(pic, structuring), structuring)
 
+    return replace(ctx, mask=morph_pic)
+
+
+def preprocess_step2(ctx: Context):
+    # STEP 2: image edge based removal
+    if ctx.reject:
+        return ctx
+
+    imshow()
+
+    norm = normalize(ctx.img)
+
+    structuring = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+
     _, black = cv2.threshold(norm, 0, 255, cv2.THRESH_BINARY_INV)
     morph_black = morph_opens(black, structuring)
 
     contours_black, _ = cv2.findContours(
         morph_black, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
     )
-    imshow_contours(contours_black, (0, 0, 255), morph_pic)
+    imshow_contours(contours_black, (255, 0, 0))
 
     floodfill_before = cv2.morphologyEx(
-        morph_pic,
+        ctx.mask_,
         cv2.MORPH_OPEN,
         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11)),
     )
@@ -73,75 +104,33 @@ def preprocess_step1(ctx: Context):
         cv2.floodFill(floodfill, None, c[0][0], (0))
 
     region = cv2.bitwise_and(
-        morph_pic,
+        ctx.mask_,
         cv2.bitwise_or(
             cv2.bitwise_not(floodfill_before),
             cv2.bitwise_and(floodfill_before, floodfill),
         ),
     )
+    morph_region = morph_closes(region, structuring)
 
-    if ((morph_pic - region) > 0).sum() > (0.3 * (morph_pic > 0).sum()):  # type: ignore
-        # maybe flood fill gone wrong
-        region = morph_pic
-
-    morph_region = morph_closes(morph_opens(region, structuring), structuring)
     imshow(morph_region)
 
-    intermediate = normalize(cv2.bitwise_and(norm, morph_region))
+    if ((ctx.mask_ - morph_region) > 0).sum() < (0.3 * (ctx.mask_ > 0).sum()):  # type: ignore
+        return replace(ctx, mask=morph_region)
 
-    neighbor_diff = normalize(
-        abs(
-            cv2.filter2D(
-                intermediate, -1, np.array([[0, -1, 0], [-1, 4, -1], [0, -1, 0]])
-            )
-        )
-    )
-
-    neighbor_diff_blur = normalize(cv2.GaussianBlur(neighbor_diff, (5, 5), 0))
-
-    dark_neighbor_diff_blur = cv2.bitwise_and(
-        cv2.bitwise_not(intermediate), neighbor_diff_blur
-    )
-    not_keep = normalize(
-        abs(
-            cv2.filter2D(
-                dark_neighbor_diff_blur,
-                -1,
-                np.array([[0, -1, 0], [-1, 4, -1], [0, -1, 0]]),  # type: ignore
-            )  # now "outlines" remains
-        )
-    )
-    imshow(not_keep)
-
-    not_keep_blur = normalize(cv2.GaussianBlur(not_keep, (5, 5), 0))
-    imshow(not_keep_blur)
-
-    _, thresh = cv2.threshold(not_keep_blur, 75, 255, cv2.THRESH_BINARY_INV)
-
-    keep = cv2.bitwise_and(thresh, morph_region)
-    morph_keep = morph_closes(keep, structuring)
-    imshow(morph_keep)
-
-    contours, _ = cv2.findContours(morph_keep, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-    # imshow_contours("s1_contours", contours, (0, 0, 255))
-    big_contours = [c for c in contours if cv2.contourArea(c) > 250]
-    imshow_contours(big_contours, (0, 0, 255))
-
-    hull = cv2.convexHull(np.vstack(big_contours))
-
-    stencil = np.zeros(ctx.img.shape).astype(ctx.img.dtype)
-    cv2.fillPoly(stencil, [hull], (255))
-    result = cv2.bitwise_and(norm, stencil)
-    imshow(result)
-    return replace(ctx, img=result)
+    # maybe flood fill gone wrong
+    return ctx
 
 
-def preprocess_step2(ctx: Context):
-    # STEP 2: remove big grains
+def preprocess_step3(ctx: Context):
+    # STEP 3: coarse grain removal via neighbor diff
     if ctx.reject:
         return ctx
 
-    norm = normalize(ctx.img)
+    imshow()
+
+    norm = normalize(ctx.masked)
+
+    structuring = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
 
     neighbor_diff = normalize(
         abs(cv2.filter2D(norm, -1, np.array([[0, -1, 0], [-1, 4, -1], [0, -1, 0]])))
@@ -165,112 +154,96 @@ def preprocess_step2(ctx: Context):
     imshow(not_keep_blur)
 
     _, thresh = cv2.threshold(not_keep_blur, 75, 255, cv2.THRESH_BINARY_INV)
-    # imshow("s1_thresh", thresh)
 
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-    # imshow_contours("s1_contours", contours, (0, 0, 255))
-    big_contours = [c for c in contours if cv2.contourArea(c) > 250]
-    # imshow_contours("s1_big_contours", big_contours, (0, 0, 255))
+    keep = cv2.bitwise_and(thresh, ctx.mask_)
+    morph_keep = morph_closes(keep, structuring)
+    imshow(morph_keep)
 
-    stencil = np.zeros(ctx.img.shape).astype(ctx.img.dtype)
-    cv2.fillPoly(stencil, big_contours, (255))
-    intermediate = cv2.bitwise_and(norm, stencil)
-    imshow(intermediate)
+    return replace(ctx, mask=morph_keep)
 
-    _, intermediate_thresh = cv2.threshold(intermediate, 15, 255, cv2.THRESH_BINARY)
-    imshow(intermediate_thresh)
+
+def preprocess_step4(ctx: Context):
+    # STEP 4: apply mask
+    return replace(ctx, img=apply_mask(ctx.img, ctx.mask_, 250), mask=None)
+
+
+def preprocess_step5(ctx: Context):
+    # STEP 5: remove small grains
+    if ctx.reject:
+        return ctx
+
+    imshow()
+
+    norm = normalize(ctx.masked)
 
     structuring = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
 
-    morph_intermediate_thresh = cv2.morphologyEx(
-        intermediate_thresh,
-        cv2.MORPH_OPEN,
-        structuring,
-    )
-    morph_intermediate_thresh = morph_closes(morph_intermediate_thresh, structuring)
-    imshow(morph_intermediate_thresh)
+    blur = normalize(cv2.bilateralFilter(norm, 32, 150, 150))
 
-    intermediate_contours, _ = cv2.findContours(
-        morph_intermediate_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
-    )
-    big_intermediate_contours = [
-        c for c in intermediate_contours if cv2.contourArea(c) > 500
-    ]
-    imshow_contours(big_intermediate_contours, (0, 0, 255))
+    _, thresh = cv2.threshold(blur, 45, 255, cv2.THRESH_BINARY)
 
-    hull = cv2.convexHull(np.vstack(big_intermediate_contours))
+    keep = cv2.bitwise_and(thresh, ctx.mask_)
+    morph_keep = morph_closes(keep, structuring)
+    imshow(morph_keep)
 
-    stencil = np.zeros(ctx.img.shape).astype(ctx.img.dtype)
-    cv2.fillPoly(stencil, [hull], (255))
-    result = cv2.bitwise_and(norm, stencil)
-    imshow(result)
-    return replace(ctx, img=result)
+    return replace(ctx, mask=morph_keep)
 
 
-def preprocess_step3(ctx: Context):
-    # STEP 3: remove small grains
+def preprocess_step6(ctx: Context):
+    # STEP 6: apply mask
+    return replace(ctx, img=apply_mask(ctx.img, ctx.mask_, 2500), mask=None)
+
+
+def reject_step6(ctx: Context):
     if ctx.reject:
         return ctx
 
-    norm = normalize(ctx.img)
+    norm = normalize(ctx.masked)
+
+    structuring = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
 
     blur = normalize(cv2.bilateralFilter(norm, 32, 150, 150))
 
     _, thresh = cv2.threshold(blur, 45, 255, cv2.THRESH_BINARY)
 
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-    big_contours = [c for c in contours if cv2.contourArea(c) > 2500]
+    keep = cv2.bitwise_and(thresh, ctx.mask_)
+    morph_keep = morph_closes(keep, structuring)
+    imshow(morph_keep)
 
-    hull = cv2.convexHull(np.vstack(big_contours))
-
-    stencil = np.zeros(ctx.img.shape).astype(ctx.img.dtype)
-    cv2.fillPoly(stencil, [hull], (255))
-    result = cv2.bitwise_and(norm, stencil)
-    imshow(result)
-    return replace(ctx, img=result)
-
-
-def reject_step3(ctx: Context):
-    if ctx.reject:
-        return ctx
-
-    norm = normalize(ctx.img)
-
-    blur = normalize(cv2.bilateralFilter(norm, 32, 150, 150))
-
-    _, thresh = cv2.threshold(blur, 45, 255, cv2.THRESH_BINARY)
-
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-    big_contours = [c for c in contours if cv2.contourArea(c) > 2500]
-
-    hull = cv2.convexHull(np.vstack(big_contours))
+    hull = get_hull(morph_keep, 2500)
 
     neighbor_diff = abs(
         cv2.filter2D(norm, -1, np.array([[0, -1, 0], [-1, 4, -1], [0, -1, 0]]))
     )
 
     score = neighbor_diff.sum() / cv2.contourArea(hull)
-    return replace(ctx, img=norm, reject=score > 30, score=[*ctx.score, int(score)])
+    return replace(ctx, reject=score > 30, score=[*ctx.score, int(score)])
 
 
-def preprocess_step4(ctx: Context):
-    # STEP 4: normalize rotation
+def preprocess_step7(ctx: Context):
+    # STEP 7: normalize rotation
     if ctx.reject:
         return ctx
 
-    norm = normalize(ctx.img)
+    imshow()
+
+    norm = normalize(ctx.masked)
+
+    structuring = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
 
     blur = normalize(cv2.bilateralFilter(norm, 32, 150, 150))
 
     _, thresh = cv2.threshold(blur, 45, 255, cv2.THRESH_BINARY)
 
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-    big_contours = [c for c in contours if cv2.contourArea(c) > 2500]
+    keep = cv2.bitwise_and(thresh, ctx.mask_)
+    morph_keep = morph_closes(keep, structuring)
+    imshow(morph_keep)
 
-    hull = cv2.convexHull(np.vstack(big_contours))
+    hull = get_hull(morph_keep, 2500)
+
     rect = cv2.minAreaRect(hull)
     box = cv2.boxPoints(rect)
-    imshow_contours([np.intp(box)], (0, 0, 255))
+    imshow_contours([np.intp(box)], (255, 0, 0))
 
     angle = 90 * round(rect[2] / 90)
     rad = np.deg2rad(np.abs(angle))
@@ -291,15 +264,18 @@ def preprocess_step4(ctx: Context):
     result = cv2.warpAffine(norm, img_mat, tuple(np.intp(np.ceil(np.max(box_rot, axis=0) - np.min(box_rot, axis=0)))))  # type: ignore
 
     imshow(result)
-    return replace(ctx, img=result)
+    return replace(ctx, img=result, mask=None)
 
 
 PREPROCESS_LIST = [
     preprocess_step1,
-    # preprocess_step2,
+    preprocess_step2,
     preprocess_step3,
-    reject_step3,
     preprocess_step4,
+    preprocess_step5,
+    preprocess_step6,
+    reject_step6,
+    preprocess_step7,
 ]
 
 
@@ -321,11 +297,11 @@ if __name__ == "__main__":
         Path("./data/dme/Response_9c26b6082b53bbfcb23fee3cf17cafcf_L_007.jpg"),
     ]
 
-    img = cv2.imread(str(IMG_PATHS[0]))
+    img = cv2.imread(str(IMG_PATHS[1]))
     result = preprocess(
         Context(
             cv2.cvtColor(img[:496, 496:, :], cv2.COLOR_BGR2GRAY),
-            dbg=preprocess_step1,
+            dbg=preprocess_step7,
         )
     )
     cv2.waitKey(0)

@@ -9,7 +9,6 @@ from .utils import Context, imshow, imshow_contours
 
 def preprocess_step1(ctx: Context):
     # STEP 1: region based removal
-
     if ctx.reject:
         return ctx
 
@@ -106,11 +105,69 @@ def preprocess_step1(ctx: Context):
         morph_region = new_morph_region
     imshow(morph_region)
 
-    contours, _ = cv2.findContours(
-        morph_region, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
+    intermediate = cv2.normalize(
+        cv2.bitwise_and(norm, morph_region),
+        None,  # type: ignore
+        0,
+        255,
+        cv2.NORM_MINMAX,
     )
 
-    hull = cv2.convexHull(np.vstack(contours))
+    neighbor_diff = cv2.normalize(
+        abs(cv2.filter2D(intermediate, -1, np.array([[0, -1, 0], [-1, 4, -1], [0, -1, 0]]))),  # type: ignore
+        None,  # type: ignore
+        0,
+        255,
+        cv2.NORM_MINMAX,
+    )
+
+    neighbor_diff_blur = cv2.normalize(cv2.GaussianBlur(neighbor_diff, (5, 5), 0), None, 0, 255, cv2.NORM_MINMAX)  # type: ignore
+
+    dark_neighbor_diff_blur = cv2.bitwise_and(
+        cv2.bitwise_not(intermediate), neighbor_diff_blur
+    )
+    not_keep = cv2.normalize(
+        abs(
+            cv2.filter2D(
+                dark_neighbor_diff_blur,
+                -1,
+                np.array([[0, -1, 0], [-1, 4, -1], [0, -1, 0]]),  # type: ignore
+            )  # now "outlines" remains
+        ),
+        None,  # type: ignore
+        0,
+        255,
+        cv2.NORM_MINMAX,
+    )
+    imshow(not_keep)
+
+    not_keep_blur = cv2.normalize(
+        cv2.GaussianBlur(not_keep, (5, 5), 0), None, 0, 255, cv2.NORM_MINMAX  # type: ignore
+    )
+    imshow(not_keep_blur)
+
+    _, thresh = cv2.threshold(not_keep_blur, 75, 255, cv2.THRESH_BINARY_INV)
+
+    keep = cv2.bitwise_and(thresh, morph_region)
+
+    morph_keep = keep.copy()
+    while True:
+        new_morph_keep = cv2.morphologyEx(
+            morph_keep,
+            cv2.MORPH_CLOSE,
+            structuring,
+        )
+        if (morph_keep == new_morph_keep).all():
+            break
+        morph_keep = new_morph_keep
+    imshow(morph_keep)
+
+    contours, _ = cv2.findContours(morph_keep, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    # imshow_contours("s1_contours", contours, (0, 0, 255))
+    big_contours = [c for c in contours if cv2.contourArea(c) > 250]
+    imshow_contours(big_contours, (0, 0, 255))
+
+    hull = cv2.convexHull(np.vstack(big_contours))
 
     stencil = np.zeros(ctx.img.shape).astype(ctx.img.dtype)
     cv2.fillPoly(stencil, [hull], (255))
@@ -321,7 +378,7 @@ def preprocess_step4(ctx: Context):
 
 PREPROCESS_LIST = [
     preprocess_step1,
-    preprocess_step2,
+    # preprocess_step2,
     preprocess_step3,
     reject_step3,
     preprocess_step4,
@@ -346,11 +403,11 @@ if __name__ == "__main__":
         Path("./data/dme/Response_9c26b6082b53bbfcb23fee3cf17cafcf_L_007.jpg"),
     ]
 
-    img = cv2.imread(str(IMG_PATHS[6]))
+    img = cv2.imread(str(IMG_PATHS[0]))
     result = preprocess(
         Context(
             cv2.cvtColor(img[:496, 496:, :], cv2.COLOR_BGR2GRAY),
-            dbg=preprocess_step4,
+            dbg=preprocess_step1,
         )
     )
     cv2.waitKey(0)

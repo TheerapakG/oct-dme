@@ -24,6 +24,7 @@ ray = {extras = ["air"], version = "^2.5.1"}
 optuna = "^3.2.0"
 torch = {version = "^2.0.1+cpu", source = "pytorch"}
 torchvision = {version = "^0.15.2+cpu", source = "pytorch"}
+fastapi = "^0.100.1"
 
 [[tool.poetry.source]]
 name = "pytorch"

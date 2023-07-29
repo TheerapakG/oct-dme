@@ -36,7 +36,7 @@ if __name__ == "__main__":
                 continue
 
             ctx = preprocess(
-                Context(cv2.cvtColor(img[:496, 496:, :], cv2.COLOR_BGR2GRAY))
+                Context(cv2.cvtColor(img[:496, 496:, :], cv2.COLOR_BGR2GRAY), dbg=False)
             )
 
             res_dir = RESULT_PATH / ("reject" if ctx.reject else "accept")
@@ -51,3 +51,4 @@ if __name__ == "__main__":
                 str(prep_dir / f"{'_'.join(str(s) for s in ctx.score)}_{path.name}"),
                 ctx.masked,
             )
+            progress.update(task, completed=i + 1, path=None)

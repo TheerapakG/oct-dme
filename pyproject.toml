@@ -20,3 +20,18 @@ rich = "^13.4.2"
 fastai = "^2.7.12"
 datasets = "^2.13.1"
 jupyter = "^1.0.0"
+ray = {extras = ["air"], version = "^2.5.1"}
+optuna = "^3.2.0"
+torch = {version = "^2.0.1+cpu", source = "pytorch"}
+torchvision = {version = "^0.15.2+cpu", source = "pytorch"}
+
+[[tool.poetry.source]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cpu"
+priority = "supplemental"
+
+
+[[tool.poetry.source]]
+name = "PyPI"
+priority = "primary"
+

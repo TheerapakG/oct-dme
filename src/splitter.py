@@ -1,172 +1,212 @@
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from itertools import combinations
 import math
-import numbers
 import numpy as np
+import pandas as pd
 from pathlib import Path
+from rich.progress import (
+    Progress,
+    TextColumn,
+    BarColumn,
+    TaskProgressColumn,
+    MofNCompleteColumn,
+    TimeRemainingColumn,
+)
 import shutil
-from sklearn.utils import check_random_state, indexable
-from typing import Generic, Iterable, TypeVar
-
-_T = TypeVar("_T")
 
 
 @dataclass
-class Data(Generic[_T]):
-    value: _T
+class Data:
+    value: Path
     group: str
     label: str
 
-
-# Modified from sklearn
-def _num_samples(x):
-    """Return number of samples in array-like x."""
-    message = "Expected sequence or array-like, got %s" % type(x)
-    if hasattr(x, "fit") and callable(x.fit):
-        # Don't get num_samples from an ensembles length!
-        raise TypeError(message)
-
-    if not hasattr(x, "__len__") and not hasattr(x, "shape"):
-        if hasattr(x, "__array__"):
-            x = np.asarray(x)
-        else:
-            raise TypeError(message)
-
-    if hasattr(x, "shape") and x.shape is not None:
-        if len(x.shape) == 0:
-            raise TypeError(
-                "Singleton array %r cannot be considered a valid collection." % x
-            )
-        # Check that shape is returning an integer or default to len
-        # Dask dataframes may not return numeric shape[0] value
-        if isinstance(x.shape[0], numbers.Integral):
-            return x.shape[0]
-
-    try:
-        return len(x)
-    except TypeError as type_error:
-        raise TypeError(message) from type_error
+    @classmethod
+    def from_path(cls, p: Path):
+        name = p.stem.split("_")
+        return cls(p, group=name[2], label=name[1])
 
 
-class BaseShuffleSplit(ABC):
-    def __init__(self, n_splits=10, split_size=[0.8, 0.1, 0.1], *, random_state=None):
-        self.n_splits = n_splits
-        self.split_size = split_size
-        self.random_state = random_state
+class Splitter:
+    def __init__(self, data: pd.DataFrame):
+        self.data = data
 
-    def split(self, X, y=None, groups=None):
-        X, y, groups = indexable(X, y, groups)  # type: ignore
-        for split in self._iter_indices(X, y, groups):
-            yield split
+    def split(self, ratio: list[float]):
+        count = (
+            self.data.groupby(["group", "label"])["value"].count().unstack().fillna(0)
+        )
+        count_sum = count.sum()
+        ratio_sum = sum(ratio)
+        target = pd.DataFrame([round(count_sum * r / ratio_sum) for r in ratio[:-1]])
+        result = [pd.DataFrame() for _ in range(len(ratio))]
+        for group, row in count.iloc[np.random.permutation(len(count))].iterrows():
+            for i in range(len(ratio) - 1):
+                if all(target.iloc[i] - row > 0):
+                    target.iloc[i] -= row
+                    result[i] = pd.concat(
+                        [result[i], self.data[self.data["group"] == group]]
+                    )
+                    break
+            else:
+                result[-1] = pd.concat(
+                    [result[-1], self.data[self.data["group"] == group]]
+                )
+        return result
 
-    @abstractmethod
-    def _iter_indices(self, X, y=None, groups=None) -> Iterable[tuple[np.ndarray, ...]]:
-        pass
+    def split_best(self, ratio: list[float], n: int):
+        labels = self.data["label"].unique()
+
+        best_mse = math.inf
+        best = [pd.DataFrame() for _ in range(len(ratio))]
+
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            MofNCompleteColumn(),
+            TimeRemainingColumn(),
+        ) as progress:
+            task = progress.add_task("splitting", total=n)
+            for i in range(n):
+                progress.update(task, completed=i)
+                current = self.split(ratio)
+                current_count = [
+                    np.array(
+                        [df.groupby(["label"])["value"].count()[l] for l in labels]
+                    )
+                    for df in current
+                ]
+                current_ratio = [count / sum(count) for count in current_count]
+
+                if any([any(r == 0) for r in current_ratio]):
+                    continue
+
+                current_mse = sum(
+                    ((c_a_ratio - c_b_ratio) ** 2).mean()
+                    for c_a_ratio, c_b_ratio in combinations(current_ratio, 2)
+                )
+                if current_mse < best_mse:
+                    best_mse = current_mse
+                    best = current
+                progress.update(task, completed=i + 1)
+
+        return best
 
 
-class ShuffleSplit(BaseShuffleSplit):
-    def __init__(self, n_splits=10, split_size=[0.8, 0.1, 0.1], *, random_state=None):
-        super().__init__(
-            n_splits=n_splits,
-            split_size=split_size,
-            random_state=random_state,
+class Upsampler:
+    def __init__(self, data: pd.DataFrame):
+        self.data = data
+
+    def upsample(self):
+        # TODO: introduce randomness
+        count = (
+            self.data.groupby(["group", "label"])["value"].count().unstack().fillna(0)
+        )
+        count_sum = count.sum()
+        target_sum = max(count_sum)
+
+        result = pd.DataFrame()
+
+        for label in count_sum.index:
+            label_count = count[count[label] > 0].sort_values(label)[label]
+            if count_sum[label] == target_sum:
+                append = self.data[self.data["label"] == label].copy()
+                append["duplicate"] = 0
+                result = pd.concat([result, append])
+                continue
+
+            took_sum = 0
+            for i in range(1, len(label_count)):
+                took_sum += label_count.iloc[i - 1]
+                fill = target_sum - (count_sum[label] - took_sum)
+                if fill / i <= label_count.iloc[i]:
+                    n, r = divmod(int(fill), i)
+                    target = pd.concat(
+                        [
+                            pd.Series(n + 1, index=label_count.index[:r]),
+                            pd.Series(n, index=label_count.index[r:i]),
+                            label_count.iloc[i:],
+                        ]
+                    )
+                    break
+            else:
+                n, r = divmod(int(target_sum), len(label_count))
+                target = pd.concat(
+                    [
+                        pd.Series(n + 1, index=label_count.index[:r]),
+                        pd.Series(n, index=label_count.index[r:]),
+                    ]
+                )
+
+            for group, group_label_count in target.items():
+                group_label_data = self.data[
+                    (self.data["group"] == group) & (self.data["label"] == label)
+                ]
+                append = pd.DataFrame()
+
+                n, r = divmod(int(group_label_count), len(group_label_data))
+                for i in range(n):
+                    append = pd.concat(
+                        [
+                            append,
+                            pd.concat(
+                                [
+                                    group_label_data,
+                                    pd.Series(
+                                        i,
+                                        index=group_label_data.index,
+                                        name="duplicate",
+                                    ),
+                                ],
+                                axis=1,
+                            ),
+                        ]
+                    )
+                append = pd.concat(
+                    [
+                        append,
+                        pd.concat(
+                            [
+                                group_label_data.iloc[:r],
+                                pd.Series(
+                                    n,
+                                    index=group_label_data.index[:r],
+                                    name="duplicate",
+                                ),
+                            ],
+                            axis=1,
+                        ),
+                    ]
+                )
+                result = pd.concat([result, append])
+
+        print(
+            result.groupby(["group", "label"])["value"]
+            .count()
+            .unstack()
+            .fillna(0)
+            .sum()
         )
 
-    def _iter_indices(self, X, y=None, groups=None):
-        n_samples = _num_samples(X)
-        n_split_acc = np.add.accumulate(self.split_size)
-        n_split_size = [
-            0,
-            *np.floor((n_split_acc * n_samples) / n_split_acc[-1]).astype(np.int32),
-        ]
-
-        rng = check_random_state(self.random_state)
-        for _ in range(self.n_splits):
-            permutation = rng.permutation(n_samples)
-            yield tuple(
-                permutation[s:e] for s, e in zip(n_split_size[:-1], n_split_size[1:])
-            )
-
-
-class GroupShuffleSplit(ShuffleSplit):
-    def __init__(self, n_splits=5, split_size=[0.8, 0.1, 0.1], *, random_state=None):
-        super().__init__(
-            n_splits=n_splits,
-            split_size=split_size,
-            random_state=random_state,
-        )
-
-    def _iter_indices(self, X, y, groups):
-        classes, group_indices = np.unique(groups, return_inverse=True)
-        for group_labels in super()._iter_indices(X=classes):
-            yield tuple(
-                np.flatnonzero(np.isin(group_indices, group_label))
-                for group_label in group_labels
-            )
-
-    def split(self, X, y=None, groups=None):
-        return super().split(X, y, groups)
+        return result
 
 
 def split(data: list[Data]):
-    keys = {d.label for d in data}
+    train, valid, test = Splitter(data).split_best([0.8, 0.1, 0.1], 64)
 
-    x = np.array([d.value for d in data])
-    y = np.array([d.label for d in data])
-    groups = np.array([d.group for d in data])
-
-    train_test_valid_mse = math.inf
-    train_x, test_x, valid_x = np.array([]), np.array([]), np.array([])
-    train_y, test_y, valid_y = np.array([]), np.array([]), np.array([])
-    train_groups, test_groups, valid_groups = np.array([]), np.array([]), np.array([])
-    for train, test, valid in GroupShuffleSplit(20, [0.8, 0.1, 0.1]).split(
-        x, y, groups=groups
-    ):
-        c_train_x, c_test_x, c_valid_x = x[train], x[test], x[valid]
-        c_train_y, c_test_y, c_valid_y = y[train], y[test], y[valid]
-        c_train_groups, c_test_groups, c_valid_groups = (
-            groups[train],
-            groups[test],
-            groups[valid],
-        )
-        c_train_ratio = np.array(
-            [len(c_train_y[c_train_y == key]) for key in keys]
-        ) / len(c_train_y)
-        c_test_ratio = np.array([len(c_test_y[c_test_y == key]) for key in keys]) / len(
-            c_test_y
-        )
-        c_valid_ratio = np.array(
-            [len(c_valid_y[c_valid_y == key]) for key in keys]
-        ) / len(c_valid_y)
-        if any(c_train_ratio == 0) or any(c_test_ratio == 0) or any(c_valid_ratio == 0):
-            continue
-        c_mse = sum(
-            ((c_a_ratio - c_b_ratio) ** 2).mean()
-            for c_a_ratio, c_b_ratio in combinations(
-                [c_train_ratio, c_test_ratio, c_valid_ratio], 2
-            )
-        )
-        if c_mse < train_test_valid_mse:
-            train_test_valid_mse = c_mse
-            train_x, test_x, valid_x = c_train_x, c_test_x, c_valid_x
-            train_y, test_y, valid_y = c_train_y, c_test_y, c_valid_y
-            train_groups, test_groups, valid_groups = (
-                c_train_groups,
-                c_test_groups,
-                c_valid_groups,
-            )
-
-    print("train", [(key, len(train_y[train_y == key])) for key in keys])
-    print("test", [(key, len(test_y[test_y == key])) for key in keys])
-    print("valid", [(key, len(valid_y[valid_y == key])) for key in keys])
+    print("train")
+    print(train.groupby(["label"])["value"].count())
+    print("valid")
+    print(valid.groupby(["label"])["value"].count())
+    print("test")
+    print(test.groupby(["label"])["value"].count())
 
     list_groups_set = [
         (label, set(groups))
         for label, groups in [
-            ("train", train_groups),
-            ("test", test_groups),
-            ("valid", valid_groups),
+            ("train", train["group"].unique()),
+            ("valid", valid["group"].unique()),
+            ("test", test["group"].unique()),
         ]
     ]
     print(
@@ -177,22 +217,27 @@ def split(data: list[Data]):
         ],
     )
 
-    return train_x, test_x, valid_x
+    return train, valid, test
 
 
 if __name__ == "__main__":
     DATA_PATH = Path("./data/filter_dme_dbg/prep_accept")
     SPLIT_PATH = Path("./data/split_dme_dbg/")
 
-    data = []
-    for p in DATA_PATH.iterdir():
-        name = p.stem.split("_")
-        data.append(Data(p, group=name[2], label=name[1]))
-
-    train_x, test_x, valid_x = split(data)
+    data = pd.DataFrame([Data.from_path(p) for p in DATA_PATH.iterdir()])
+    train, valid, test = split(data)
 
     SPLIT_PATH.mkdir(parents=True)
-    for label, paths in [("train", train_x), ("test", test_x), ("valid", valid_x)]:
-        (SPLIT_PATH / label).mkdir(parents=True, exist_ok=True)
-        for p in paths:
-            shutil.copy2(p, SPLIT_PATH / label)
+    for s, ds in [("train", train), ("valid", valid), ("test", test)]:
+        up = Upsampler(ds).upsample()
+        for label in up["label"].unique():
+            (SPLIT_PATH / s / label).mkdir(parents=True, exist_ok=True)
+            for _, row in up[up["label"] == label].iterrows():
+                p = row["value"]
+                shutil.copy2(
+                    p,
+                    SPLIT_PATH
+                    / s
+                    / row["label"]
+                    / f"{p.stem}_{row['duplicate']}.{p.suffix}",
+                )

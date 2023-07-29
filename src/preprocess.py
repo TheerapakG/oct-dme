@@ -3,7 +3,7 @@ from dataclasses import replace
 import numpy as np
 from pathlib import Path
 
-from .utils import Context, imshow, imshow_contours
+from .utils import Context, imshow, imshow_contours, log, dbg
 
 
 def morph_opens(img: cv2.Mat, structuring):
@@ -132,28 +132,18 @@ def preprocess_step3(ctx: Context):
 
     structuring = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
 
-    neighbor_diff = normalize(
-        abs(cv2.filter2D(norm, -1, np.array([[0, -1, 0], [-1, 4, -1], [0, -1, 0]])))
-    )
+    neighbor_diff = cv2.convertScaleAbs(cv2.Laplacian(norm, cv2.CV_16S))
 
     neighbor_diff_blur = normalize(cv2.GaussianBlur(neighbor_diff, (5, 5), 0))
 
     dark_neighbor_diff_blur = cv2.bitwise_and(cv2.bitwise_not(norm), neighbor_diff_blur)
-    not_keep = normalize(
-        abs(
-            cv2.filter2D(
-                dark_neighbor_diff_blur,
-                -1,
-                np.array([[0, -1, 0], [-1, 4, -1], [0, -1, 0]]),  # type: ignore
-            )  # now "outlines" remains
-        )
-    )
+    not_keep = cv2.convertScaleAbs(cv2.Laplacian(dark_neighbor_diff_blur, cv2.CV_16S))
     imshow(not_keep)
 
-    not_keep_blur = normalize(cv2.GaussianBlur(not_keep, (5, 5), 0))
+    not_keep_blur = cv2.GaussianBlur(not_keep, (5, 5), 0)
     imshow(not_keep_blur)
 
-    _, thresh = cv2.threshold(not_keep_blur, 75, 255, cv2.THRESH_BINARY_INV)
+    _, thresh = cv2.threshold(not_keep_blur, 90, 255, cv2.THRESH_BINARY_INV)
 
     keep = cv2.bitwise_and(thresh, ctx.mask_)
     morph_keep = morph_closes(keep, structuring)
@@ -164,7 +154,7 @@ def preprocess_step3(ctx: Context):
 
 def preprocess_step4(ctx: Context):
     # STEP 4: apply mask
-    return replace(ctx, img=apply_mask(ctx.img, ctx.mask_, 250), mask=None)
+    return replace(ctx, img=apply_mask(ctx.img, ctx.mask_, 500), mask=None)
 
 
 def preprocess_step5(ctx: Context):
@@ -212,12 +202,12 @@ def reject_step6(ctx: Context):
 
     hull = get_hull(morph_keep, 2500)
 
-    neighbor_diff = abs(
-        cv2.filter2D(norm, -1, np.array([[0, -1, 0], [-1, 4, -1], [0, -1, 0]]))
-    )
+    neighbor_diff = cv2.convertScaleAbs(cv2.Laplacian(norm, cv2.CV_16S))
 
     score = neighbor_diff.sum() / cv2.contourArea(hull)
-    return replace(ctx, reject=score > 30, score=[*ctx.score, int(score)])
+    log.debug(f"{score}")
+
+    return replace(ctx, reject=score > 40, score=[*ctx.score, int(score)])
 
 
 def preprocess_step7(ctx: Context):
@@ -286,6 +276,10 @@ def preprocess(ctx: Context):
 
 
 if __name__ == "__main__":
+    import logging
+
+    logging.basicConfig()
+
     # TODO: cmd line
     IMG_PATHS = [
         Path("./data/dme/Response_9a88ec32f1c2ffe761e3824aab93c7b8_R_004.jpg"),
@@ -295,13 +289,13 @@ if __name__ == "__main__":
         Path("./data/dme/Response_bff83e94923f91e8af14db5714a937d9_L_001.jpg"),
         Path("./data/dme/Response_81f40dc0d3e0ec390a4960070fa8e609_L_000.jpg"),
         Path("./data/dme/Response_9c26b6082b53bbfcb23fee3cf17cafcf_L_007.jpg"),
+        Path("./data/dme/Non response_8c5f0feeb9f34ff1f7b5325bd7855b60_L_007.jpg"),
     ]
 
-    img = cv2.imread(str(IMG_PATHS[1]))
+    img = cv2.imread(str(IMG_PATHS[4]))
     result = preprocess(
         Context(
             cv2.cvtColor(img[:496, 496:, :], cv2.COLOR_BGR2GRAY),
-            dbg=preprocess_step7,
         )
     )
     cv2.waitKey(0)

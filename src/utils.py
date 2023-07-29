@@ -1,7 +1,9 @@
+from collections.abc import Mapping
 import cv2
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import wraps
 import inspect
+import logging
 import numpy as np
 from typing import Callable
 
@@ -12,7 +14,7 @@ class Context:
     mask: cv2.Mat | None = field(default=None)
     reject: bool = field(default=False)
     score: list[int] = field(default_factory=list)
-    dbg: Callable | bool = field(default=False)
+    dbg: Callable | bool | None = field(default=None)
 
     @property
     def mask_(self):
@@ -31,32 +33,108 @@ class Context:
         mask_img = cv2.bitwise_and(color_img, color_img, mask=self.mask_)
         return cv2.addWeighted(mask_img, 1, img, 1, 0)
 
+    @staticmethod
+    def get_current():
+        return next(
+            (
+                _ctx
+                for frameinfo in inspect.stack()
+                if (_ctx := frameinfo.frame.f_locals.get("ctx", None))
+                and isinstance(_ctx, Context)
+            ),
+            None,
+        )
+
+
+def is_dbg_ctx(ctx: Context | None):
+    return bool(
+        ctx
+        and ctx.dbg
+        and (
+            isinstance(ctx.dbg, bool)
+            or ctx.dbg.__name__ in [frameinfo.function for frameinfo in inspect.stack()]
+        )
+    )
+
+
+def is_dbg_current_ctx():
+    return is_dbg_ctx(Context.get_current())
+
+
+class ContextLogger(logging.LoggerAdapter):
+    def __init__(self, logger: logging.Logger):
+        super().__init__(logger)
+
+    def log(
+        self,
+        level: int,
+        msg: object,
+        *args: object,
+        exc_info=None,
+        stack_info: bool = False,
+        stacklevel: int = 1,
+        extra: Mapping[str, object] | None = None,
+        **kwargs,
+    ):
+        prev_level = self.logger.level
+        if is_dbg_current_ctx():
+            self.setLevel(logging.DEBUG)
+
+        super().log(
+            level,
+            msg,
+            *args,
+            exc_info=exc_info,
+            stack_info=stack_info,
+            stacklevel=stacklevel,
+            extra=extra,
+            **kwargs,
+        )
+
+        self.setLevel(prev_level)
+
+
+log = ContextLogger(logging.getLogger(__name__))
+
+
+def dbg(f):
+    signature = inspect.signature(f)
+
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        old_ctx = Context.get_current()
+
+        if not old_ctx or old_ctx.dbg == False:
+            bound = signature.bind_partial(*args, **kwargs)
+            bound.apply_defaults()
+            return f(*bound.args, **bound.kwargs)
+
+        ctx = replace(old_ctx, dbg=f)
+
+        bound = signature.bind_partial(*args, **kwargs)
+        if "ctx" in signature.parameters:
+            bound.arguments["ctx"] = ctx
+        bound.apply_defaults()
+
+        res = f(*bound.args, **bound.kwargs)
+        if isinstance(res, Context):
+            res = replace(ctx, dbg=old_ctx.dbg)
+
+        return res
+
+    return wrapper
+
 
 def dbg_only(f):
     signature = inspect.signature(f)
 
     @wraps(f)
     def wrapper(*args, **kwargs):
-        ctx: Context | None = None
-
         stack = inspect.stack()
 
-        for frameinfo in stack:
-            if (
-                ctx is None
-                and (_ctx := frameinfo.frame.f_locals.get("ctx", None))
-                and isinstance(_ctx, Context)
-            ):
-                ctx = _ctx
+        ctx = Context.get_current()
 
-        if (
-            not ctx
-            or not ctx.dbg
-            or (
-                inspect.isfunction(ctx.dbg)
-                and ctx.dbg.__name__ not in [frameinfo.function for frameinfo in stack]
-            )
-        ):
+        if not is_dbg_ctx(ctx):
             return
 
         bound = signature.bind_partial(*args, **kwargs)

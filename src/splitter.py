@@ -1,3 +1,4 @@
+from argparse import ArgumentParser
 from dataclasses import dataclass
 from itertools import combinations
 import math
@@ -19,12 +20,13 @@ import shutil
 class Data:
     value: Path
     group: str
+    side: str
     label: str
 
     @classmethod
     def from_path(cls, p: Path):
         name = p.stem.split("_")
-        return cls(p, group=name[2], label=name[1])
+        return cls(p, group=name[2], side=name[3], label=name[1])
 
 
 class Splitter:
@@ -220,24 +222,61 @@ def split(data: list[Data]):
     return train, valid, test
 
 
-if __name__ == "__main__":
+def main():
+    parser = ArgumentParser()
+    parser.add_argument(
+        "-w",
+        "--weight",
+        action="store_true",
+        help="output weight files instead of performing class balancing",
+    )
+    args = parser.parse_args()
+
     DATA_PATH = Path("./data/filter_dme_dbg/prep_accept")
     SPLIT_PATH = Path("./data/split_dme_dbg/")
 
     data = pd.DataFrame([Data.from_path(p) for p in DATA_PATH.iterdir()])
     train, valid, test = split(data)
 
+    dss = {
+        "train": train,
+        "valid": valid,
+        "test": test,
+    }
+
     SPLIT_PATH.mkdir(parents=True)
-    for s, ds in [("train", train), ("valid", valid), ("test", test)]:
-        up = Upsampler(ds).upsample()
-        for label in up["label"].unique():
-            (SPLIT_PATH / s / label).mkdir(parents=True, exist_ok=True)
-            for _, row in up[up["label"] == label].iterrows():
-                p = row["value"]
-                shutil.copy2(
-                    p,
-                    SPLIT_PATH
-                    / s
-                    / row["label"]
-                    / f"{p.stem}_{row['duplicate']}.{p.suffix}",
-                )
+    for s, ds in dss.items():
+        if args.weight:
+            count = (
+                ds.groupby(["group", "side", "label"])["value"]
+                .count()
+                .unstack()
+                .fillna(0)
+            )
+            count.to_csv(SPLIT_PATH / f"{s}_weight.csv")
+            for label in ds["label"].unique():
+                for _, row in ds[ds["label"] == label].iterrows():
+                    (SPLIT_PATH / s / label / row["group"] / row["side"]).mkdir(
+                        parents=True, exist_ok=True
+                    )
+                    shutil.copy2(
+                        row["value"],
+                        SPLIT_PATH / s / label / row["group"] / row["side"],
+                    )
+        else:
+            up = Upsampler(ds).upsample()
+            for label in up["label"].unique():
+                (SPLIT_PATH / s / label).mkdir(parents=True, exist_ok=True)
+                for _, row in up[up["label"] == label].iterrows():
+                    p = row["value"]
+                    shutil.copy2(
+                        p,
+                        SPLIT_PATH
+                        / s
+                        / row["label"]
+                        / f"{p.stem}_{row['duplicate']}.{p.suffix}",
+                    )
+
+
+if __name__ == "__main__":
+    main()
